@@ -11,22 +11,17 @@ const Sender = () => {
         setSocket(socket)
         
     }, [])
+    
     const startSendingVideo =async () =>{
         if (!socket) return;
         //create an instance of RTC peer Connection
         const pc = new RTCPeerConnection();
-        pc.onnegotiationneeded = async () => {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            
-            pc.onicecandidate = (event) => {
+
+        pc.onicecandidate = (event) => {
                 if(event.candidate){
                     socket.send(JSON.stringify({ type: "iceCandidate", candidate: event.candidate }));
                 }
             }
-
-            socket?.send(JSON.stringify({ type: "createOffer", sdp : pc.localDescription }));
-        };
         socket.onmessage = async (event) => {
             const data = JSON.parse(event.data);
             if (data.type === "createAnswer") {
@@ -40,14 +35,23 @@ const Sender = () => {
         if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
         }
-        pc.addTrack(stream.getVideoTracks()[0]);
+        pc.addTrack(stream.getVideoTracks()[0], stream);
+
+        pc.onnegotiationneeded = async () => {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            
+            
+
+            socket?.send(JSON.stringify({ type: "createOffer", sdp : pc.localDescription }));
+        };
     }
 
   return (
     <div>
       <h1>Sender</h1>
       <button onClick={startSendingVideo}>Send Video</button>
-      <video ref={localVideoRef} autoPlay playsInline muted />
+      <video ref={localVideoRef} autoPlay  />
     </div>
   )
 }
