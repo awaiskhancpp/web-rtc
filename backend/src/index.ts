@@ -2,77 +2,112 @@ import { WebSocketServer, WebSocket } from "ws";
 
 const wss = new WebSocketServer({ port: 8080 });
 
-let senderSocket : null | WebSocket = null;
-const receivers = new Map<string, WebSocket>();
+let senderSocket: WebSocket | null = null;
+const receivers = new Map();
 
-wss.on("connection",(ws)=>{
-    ws.on("error",console.error);
-    ws.on("close",()=>{
-        for(const [rid, sock] of receivers){
+console.log("WebSocket signaling server running on port 8080");
+
+wss.on("connection", (ws) => {
+    ws.on("error", console.error);
+    
+    ws.on("close", () => {
+        // Check if it's a receiver disconnecting
+        for (const [rid, sock] of receivers) {
             if (sock === ws) {
                 receivers.delete(rid);
                 console.log(`Receiver ${rid} disconnected`);
                 break;
             }
         }
-        if(ws === senderSocket){
+        
+        // Check if it's the sender disconnecting
+        if (ws === senderSocket) {
             senderSocket = null;
-            console.log("Sender disconnected, closing all receiver connections");
-        }
-    })
-    ws.on("message",(data:any)=>{
-        const message =JSON.parse(data);
-        if(message.type === "sender") {
-            senderSocket = ws;
-            console.log("Sender connected");
-        } else if (message.type === "receiver") {
-            const { receiverId } = message;
-            if (!receiverId) {
-                console.warn("Receiver connected without receiverId");
-                return;
-            }
-            receivers.set(receiverId, ws);
-        }else if (message.type === "createOffer"){
-            const { receiverId, sdp } = message;
-            const recSock = receivers.get(receiverId);
-            if(ws === senderSocket && recSock){
-                recSock.send(JSON.stringify({
-                    type: "createOffer",
-                    sdp,
-                    receiverId
-                    }));
-            }
-            console.log(`Forwarded offer to receiver ${receiverId}`);
-        }else if(message.type === "createAnswer"){
-            const { receiverId, sdp } = message;
-            const recSock = receivers.get(receiverId);
-            if (recSock && ws === recSock && senderSocket) {
-                senderSocket.send(JSON.stringify({ type: "createAnswer", sdp, receiverId }));
-                console.log(`Forwarded answer from ${receiverId} to sender`);
-            }
-            console.log(`Forwarded answer from ${receiverId} to sender`);
-        }else if(message.type === "iceCandidate"){
-            const { receiverId, candidate } = message;
-            if(ws === senderSocket){
-                const recSock = receivers.get(receiverId);
-        recSock?.send(JSON.stringify({
-             type: "iceCandidate",
-             candidate,
-             receiverId
-            }));
-            console.log(`Sender ICE → receiver ${receiverId}`);
-                
-            }else{
-                if(senderSocket){
-                    senderSocket.send(JSON.stringify({
-                        type: "iceCandidate",
-                        candidate,
-                        receiverId
-                    }));
-                    console.log(`Receiver ${receiverId} ICE → sender`);
-                }
-            }
+            console.log("Sender disconnected");
+            
+            // Notify all receivers that sender disconnected
+            receivers.forEach((receiverSocket) => {
+                receiverSocket.send(JSON.stringify({
+                    type: "senderDisconnected"
+                }));
+            });
         }
     });
-    console.log("WebSocket signaling server running on port 8080");
-})
+    
+    ws.on("message", (data:any) => {
+        const message = JSON.parse(data);
+        
+        switch (message.type) {
+            case "sender":
+                senderSocket = ws;
+                console.log("Sender connected");
+                break;
+                
+            case "receiver":
+                const { receiverId } = message;
+                if (!receiverId) {
+                    console.warn("Receiver connected without receiverId");
+                    return;
+                }
+                receivers.set(receiverId, ws);
+                console.log(`Receiver ${receiverId} connected`);
+                break;
+                
+            case "createOffer":
+                if (ws === senderSocket && message.receiverId) {
+                    const recSock = receivers.get(message.receiverId);
+                    if (recSock) {
+                        recSock.send(JSON.stringify({
+                            type: "createOffer",
+                            sdp: message.sdp,
+                            receiverId: message.receiverId
+                        }));
+                        console.log(`Forwarded offer to receiver ${message.receiverId}`);
+                    } else {
+                        console.warn(`Receiver ${message.receiverId} not found`);
+                    }
+                }
+                break;
+                
+            case "createAnswer":
+                const answererSocket = receivers.get(message.receiverId);
+                if (ws === answererSocket && senderSocket) {
+                    senderSocket.send(JSON.stringify({
+                        type: "createAnswer",
+                        sdp: message.sdp,
+                        receiverId: message.receiverId
+                    }));
+                    console.log(`Forwarded answer from ${message.receiverId} to sender`);
+                }
+                break;
+                
+            case "iceCandidate":
+                if (ws === senderSocket && message.receiverId) {
+                    // ICE candidate from sender to specific receiver
+                    const recSock = receivers.get(message.receiverId);
+                    if (recSock) {
+                        recSock.send(JSON.stringify({
+                            type: "iceCandidate",
+                            candidate: message.candidate,
+                            receiverId: message.receiverId
+                        }));
+                        console.log(`Sender ICE → receiver ${message.receiverId}`);
+                    }
+                } else {
+                    // ICE candidate from receiver to sender
+                    if (senderSocket && message.receiverId) {
+                        senderSocket.send(JSON.stringify({
+                            type: "iceCandidate",
+                            candidate: message.candidate,
+                            receiverId: message.receiverId
+                        }));
+                        console.log(`Receiver ${message.receiverId} ICE → sender`);
+                    }
+                }
+                break;
+                
+            default:
+                console.warn(`Unknown message type: ${message.type}`);
+        }
+    });
+});
